@@ -27,6 +27,13 @@
             margin: 1rem 0;
             font-family: monospace;
         }
+        .countdown-display {
+            font-size: 3rem;
+            margin: 1rem 0;
+            font-family: monospace;
+            color: #f44336;
+            min-height: 4.5rem;
+        }
         .controls {
             display: flex;
             justify-content: center;
@@ -67,30 +74,24 @@
             border-top: 1px solid #eee;
             padding-top: 1rem;
         }
-        .toggle-option {
+        .setting-item {
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 0.5rem;
             margin-top: 0.5rem;
         }
-        .status {
+        .wake-lock-status {
             font-size: 0.8rem;
-            margin-top: 1rem;
             color: #666;
-        }
-        .active {
-            color: #4CAF50;
-            font-weight: bold;
-        }
-        .inactive {
-            color: #f44336;
+            margin-top: 0.5rem;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Talking Stopwatch</h1>
+        <div class="countdown-display" id="countdown"></div>
         <div class="time-display" id="display">00:00:00</div>
         <div class="controls">
             <button class="start" id="startBtn">Start</button>
@@ -98,15 +99,15 @@
             <button class="reset" id="resetBtn">Reset</button>
         </div>
         <div class="settings">
-            <div class="toggle-option">
+            <div class="setting-item">
                 <input type="checkbox" id="muteToggle">
                 <label for="muteToggle">Mute</label>
             </div>
-            <div class="toggle-option">
+            <div class="setting-item">
                 <input type="checkbox" id="wakeLockToggle" checked>
-                <label for="wakeLockToggle">Keep screen awake</label>
+                <label for="wakeLockToggle">Wake lock</label>
             </div>
-            <div class="status" id="wakeLockStatus">Wake Lock: <span class="inactive">Inactive</span></div>
+            <div class="wake-lock-status" id="wakeLockStatus"></div>
         </div>
     </div>
 
@@ -114,6 +115,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             // Elements
             const display = document.getElementById('display');
+            const countdownDisplay = document.getElementById('countdown');
             const startBtn = document.getElementById('startBtn');
             const stopBtn = document.getElementById('stopBtn');
             const resetBtn = document.getElementById('resetBtn');
@@ -127,60 +129,48 @@
             let timerInterval;
             let lastAnnouncedTens = -1;
             let synth = window.speechSynthesis;
+            let isCountingDown = false;
+            let countdownValue = 10;
+            let countdownInterval;
             let wakeLock = null;
             
             // Check if Wake Lock API is supported
-            const isWakeLockSupported = 'wakeLock' in navigator;
-            
-            if (!isWakeLockSupported) {
+            if ('wakeLock' in navigator) {
+                wakeLockStatus.textContent = "Wake Lock API is supported.";
+            } else {
+                wakeLockStatus.textContent = "Wake Lock API is not supported in this browser.";
                 wakeLockToggle.disabled = true;
                 wakeLockToggle.checked = false;
-                wakeLockStatus.innerHTML = 'Wake Lock: <span class="inactive">Not supported in this browser</span>';
             }
             
-            // Wake Lock functions
+            // Function to request a wake lock
             async function requestWakeLock() {
-                if (!isWakeLockSupported || !wakeLockToggle.checked) return;
+                if (!wakeLockToggle.checked || !('wakeLock' in navigator)) return;
                 
                 try {
                     wakeLock = await navigator.wakeLock.request('screen');
-                    wakeLockStatus.innerHTML = 'Wake Lock: <span class="active">Active</span>';
+                    wakeLockStatus.textContent = "Wake Lock is active.";
                     
                     wakeLock.addEventListener('release', () => {
-                        wakeLockStatus.innerHTML = 'Wake Lock: <span class="inactive">Released</span>';
+                        wakeLockStatus.textContent = "Wake Lock released.";
                         wakeLock = null;
                     });
+                    
                 } catch (err) {
-                    console.error(`Wake Lock error: ${err.name}, ${err.message}`);
-                    wakeLockStatus.innerHTML = `Wake Lock: <span class="inactive">Error: ${err.message}</span>`;
+                    wakeLockStatus.textContent = `Wake Lock error: ${err.message}`;
                 }
             }
             
+            // Function to release the wake lock
             function releaseWakeLock() {
                 if (wakeLock) {
                     wakeLock.release()
                         .then(() => {
+                            wakeLockStatus.textContent = "Wake Lock released.";
                             wakeLock = null;
-                            wakeLockStatus.innerHTML = 'Wake Lock: <span class="inactive">Inactive</span>';
                         });
                 }
             }
-            
-            // Re-request wake lock when page becomes visible again
-            document.addEventListener('visibilitychange', async () => {
-                if (wakeLock !== null && document.visibilityState === 'visible' && startBtn.disabled) {
-                    await requestWakeLock();
-                }
-            });
-            
-            // Update wake lock when toggle changes
-            wakeLockToggle.addEventListener('change', async () => {
-                if (wakeLockToggle.checked && startBtn.disabled) {
-                    await requestWakeLock();
-                } else {
-                    releaseWakeLock();
-                }
-            });
             
             // Initialize speech synthesis
             function speak(text) {
@@ -235,44 +225,84 @@
                 const currentTens = Math.floor(elapsedTime / 1000);
                 if (currentTens > lastAnnouncedTens && currentTens > 0) {
                     lastAnnouncedTens = currentTens;
-                    speak(`Elapsed time: ${formatTimeForSpeech(elapsedTime)}`);
+                    speak(`${formatTimeForSpeech(elapsedTime)}`);
                 }
             }
             
-            // Start the timer
-            async function start() {
+            // Countdown function
+            function countdown() {
+                if (countdownValue > 0) {
+                    countdownDisplay.textContent = countdownValue;
+                    speak(countdownValue.toString());
+                    countdownValue--;
+                } else {
+                    clearInterval(countdownInterval);
+                    countdownDisplay.textContent = "";
+                    isCountingDown = false;
+                    
+                    // Start the actual stopwatch
+                    startStopwatch();
+                    speak("Go!");
+                }
+            }
+            
+            // Start countdown then the stopwatch
+            function start() {
+                if (isCountingDown) return;
+                
+                // Request wake lock when starting
+                requestWakeLock();
+                
+                // Disable buttons during countdown
                 startBtn.disabled = true;
+                resetBtn.disabled = true;
+                
+                // Reset countdown
+                countdownValue = 10;
+                isCountingDown = true;
+                
+                // Start the countdown
+                countdown(); // Call immediately to start at 10
+                countdownInterval = setInterval(countdown, 1000);
+            }
+            
+            // Start the actual stopwatch
+            function startStopwatch() {
                 stopBtn.disabled = false;
                 
                 startTime = Date.now() - (elapsedTime * 10); // Adjust for any existing elapsed time
                 
                 timerInterval = setInterval(updateDisplay, 10); // Update every 10ms (1 centisecond)
-                
-                // Request wake lock if enabled
-                if (wakeLockToggle.checked) {
-                    await requestWakeLock();
-                }
-                
-                // Announce start
-                speak("Stopwatch started");
             }
             
             // Stop the timer
             function stop() {
+                // If we're in countdown mode, cancel it
+                if (isCountingDown) {
+                    clearInterval(countdownInterval);
+                    countdownDisplay.textContent = "";
+                    isCountingDown = false;
+                }
+                
                 startBtn.disabled = false;
                 stopBtn.disabled = true;
+                resetBtn.disabled = false;
                 
                 clearInterval(timerInterval);
                 
-                // Release wake lock
+                // Release wake lock when stopping
                 releaseWakeLock();
-                
-                // Announce stop with current time
-                speak(`Stopwatch paused at ${formatTimeForSpeech(elapsedTime)}`);
             }
             
             // Reset the timer
             function reset() {
+                // If we're in countdown mode, cancel it
+                if (isCountingDown) {
+                    clearInterval(countdownInterval);
+                    countdownDisplay.textContent = "";
+                    isCountingDown = false;
+                }
+                
                 clearInterval(timerInterval);
                 
                 startBtn.disabled = false;
@@ -281,13 +311,19 @@
                 elapsedTime = 0;
                 lastAnnouncedTens = -1;
                 display.textContent = "00:00:00";
+                countdownDisplay.textContent = "";
                 
-                // Release wake lock
+                // Release wake lock when resetting
                 releaseWakeLock();
-                
-                // Announce reset
-                speak("Stopwatch reset");
             }
+            
+            // Handle visibility change (for wake lock reacquisition)
+            document.addEventListener('visibilitychange', async () => {
+                if (wakeLock !== null && document.visibilityState === 'visible' && 
+                    (timerInterval !== null || isCountingDown)) {
+                    await requestWakeLock();
+                }
+            });
             
             // Event listeners
             startBtn.addEventListener('click', start);
